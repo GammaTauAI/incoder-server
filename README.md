@@ -1,6 +1,7 @@
 # Incoder server
 
-## To run (from `./test_server.py`)
+## To run
+  - from `./test_server.py`
 ```py
 import subprocess
 
