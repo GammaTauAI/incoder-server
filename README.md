@@ -1,7 +1,7 @@
 # Incoder server
 
 ## To run (from `./test_server.py`)
-```
+```py
 import subprocess
 
 API = 'http://localhost:8000'
