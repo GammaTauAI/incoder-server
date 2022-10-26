@@ -1,13 +1,13 @@
 """From infill/example_usage.py"""
 
 from typing import List
-from utils import input_to_infill_format
+from utils import input_to_infill_format, compose_response
 
 import torch
 import tokenizers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
-tokenizers_version = tuple(int(n) for n in tokenizers.__version__.split('.'))
+tokenizers_version = tuple(int(n) for n in tokenizers.__version__.split('.')) # type: ignore
 if tokenizers_version < (0, 12, 1):
     print("warning: Your tokenizers version looks old and you will likely have formatting issues. We recommend installing tokenizers >= 0.12.1")
 
@@ -15,10 +15,11 @@ if tokenizers_version < (0, 12, 1):
 BIG_MODEL = False
 
 # use a GPU
-CUDA = False
+CUDA = torch.cuda.is_available()
 
-# print intermediate outputs of infilling
-VERBOSE = False
+# infill max length allowed
+MAX_TO_GENERATE = 1
+
 
 if BIG_MODEL:
     model_name = "facebook/incoder-6B"
@@ -43,11 +44,8 @@ else:
     model_name = "facebook/incoder-1B"
     kwargs = {}
 
-print("loading model")
 model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-print("loading tokenizer")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-print("loading complete")
 
 if CUDA:
     # if you plan to fine-tune the model, you should not use half precision.
@@ -80,7 +78,7 @@ def generate(input: str, max_to_generate: int=128, temperature: float=0.2):
         detok_hypo_str = detok_hypo_str[len(BOS):]
     return detok_hypo_str
 
-def infill(parts: List[str], max_to_generate: int=128, temperature: float=0.2, extra_sentinel: bool=True, max_retries: int=1):
+def _infill(parts: List[str], max_to_generate: int, temperature: float, max_retries: int, extra_sentinel: bool=True):
     """
     Generate infills to complete a partial document, e.g.
     [A C E] -> [A B C D E], where B and D are infills that have been generated.
@@ -106,13 +104,12 @@ def infill(parts: List[str], max_to_generate: int=128, temperature: float=0.2, e
     assert isinstance(parts, list)
     retries_attempted = 0
     done = False
+    text = ''
+    infills = []
 
     while (not done) and (retries_attempted < max_retries):
         retries_attempted += 1
 
-        if VERBOSE:
-            print(f"retry {retries_attempted}")
-        
         ## (1) build the prompt
         if len(parts) == 1:
             prompt = parts[0]
@@ -137,8 +134,6 @@ def infill(parts: List[str], max_to_generate: int=128, temperature: float=0.2, e
             completion = generate(prompt, max_to_generate, temperature)
             completion = completion[len(prompt):]
             if EOM not in completion:
-                if VERBOSE:
-                    print(f"warning: {EOM} not found")
                 completion += EOM
                 done = False
             completion = completion[:completion.index(EOM) + len(EOM)]
@@ -149,20 +144,6 @@ def infill(parts: List[str], max_to_generate: int=128, temperature: float=0.2, e
         complete.append(parts[-1])
         text = ''.join(complete)
 
-    if VERBOSE:
-        print("generated text:")
-        print(prompt)
-        print()
-        print("parts:")
-        print(parts)
-        print()
-        print("infills:")
-        print(infills)
-        print()
-        print("restitched text:")
-        print(text)
-        print()
-    
     return {
         'text': text, # str, the completed document (with infills inserted)
         'parts': parts, # List[str], length N. Same as passed to the method
@@ -170,41 +151,20 @@ def infill(parts: List[str], max_to_generate: int=128, temperature: float=0.2, e
         'retries_attempted': retries_attempted, # number of retries used (if max_retries > 1)
     } 
 
-def code_to_docstring(max_to_generate=128, temperature=0.2):
-    # this will sometimes generate extra functions! this can be avoided by truncating generation when e.g. a """ is produced
-    example = '''\
-def count_words(filename):
-    """ <insert> """
-    counts = Counter()
-    with open(filename) as file:
-        for line in file:
-            words = line.split(' ')
-            counts.update(words)
-    return counts'''
+def infill(input: str, max_to_generate: int = MAX_TO_GENERATE, temperature: float = 1.0, max_retries: int=1) -> str:
+    res = _infill(
+        parts=input_to_infill_format(input),
+        max_to_generate=max_to_generate,
+        temperature=temperature,
+        max_retries=max_retries
+    )
+    return compose_response(res)
 
-    parts = example.split("<insert>")
-    result = infill(parts, max_to_generate=max_to_generate, temperature=temperature)
-    print("completed document:")
-    print(result["text"])
-    return result["text"]
-
-def docstring_to_code(max_to_generate=128, temperature=0.2):
-    example = '''\
-def <insert>
-    """ Count the number of occurrences of each word in the file. """
-    <insert>
-<|/ file |>'''
-    parts = example.split("<insert>")
-    result = infill(parts, max_to_generate=max_to_generate, temperature=temperature)
-    print("completed document:")
-    print(result["text"])
-    return result["text"]
 
 if __name__ == "__main__":
     with open('./test.ts', 'r') as f:
         code = f.read()
-        infill_input = input_to_infill_format(code)
-        res = infill(infill_input, temperature=1.0, max_to_generate=1)
+        res = infill(code, max_to_generate=1, temperature=1.0, max_retries=1)
         with open('./temp.ts', 'w') as file:
-            file.writelines(res['infills'])
+            file.writelines(res)
 
