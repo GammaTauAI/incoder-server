@@ -1,10 +1,20 @@
 # Incoder server
 
+## `main` branch instructions
+
+This branch uses sockets to communicate with the client.
+The code was originally made by @mhyee
+
+## `http` branch instructions
+
 ## To run
-  - `python server.py`
+
+- `python server.py`
 
 ## Example POST
-  - from `./test_server.py`
+
+- from `./test_server.py`
+
 ```py
 import subprocess
 
@@ -12,7 +22,7 @@ API = 'http://localhost:8000'
 
 with open('./test.ts') as f:
     input = f.read()
-    n = 1 
+    n = 1
     temperature = 0.8
     stdout = subprocess.run(['curl', '-d', f'temperature={temperature}&input={input}&retries={n}', 'http://localhost:8000']).stdout
     print(str(stdout))
