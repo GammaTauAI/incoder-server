@@ -7,8 +7,6 @@ from threading import Thread
 
 from infill import infill
 
-from typing import List
-
 SERVER_ADDR = sys.argv[2]
 BUFF_SIZE = 4096
 
@@ -53,7 +51,19 @@ def on_client(c: socket.socket) -> None:
             num_samples = req.num_samples
             should_infill_single = req.should_infill_single
             type_annotations = infill(code, num_samples, should_infill_single)
-            c.send(json.dumps(type_annotations).encode('utf-8'))
+            if should_infill_single:
+                c.send(json.dumps({
+                    "type": "single",
+                    'type_annotations': [base64.b64decode(item) for item in type_annotations]
+                }).encode("utf-8")) # [Vec<String>]
+            else:
+                # decode each item in the 2d array
+                c.send(json.dumps({
+                    "type": "multiple",
+                    'type_annotations': [
+                        [[base64.b64decode(item) for item in row] for row in type_annotations]
+                    ]
+                }).encode("utf-8")) # Vec<Vec<String>>
     finally:
         c.close()
 
