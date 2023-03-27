@@ -25,7 +25,7 @@ def init_model(model_name: str):
         kwargs = dict()
     return {
         "model": AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-        .half()
-        .to(0),
+        .half(),
+        # .to(0),
         "tokenizer": AutoTokenizer.from_pretrained(model_name),
     }
