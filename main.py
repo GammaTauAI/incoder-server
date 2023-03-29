@@ -3,19 +3,22 @@ import sys
 import json
 import base64
 import socket
+import signal
 from threading import Thread
+from functools import partial
 
 from infill import infill
 
-SERVER_ADDR = sys.argv[2]
+assert len(sys.argv) == 2
+SOCKET_PATH = sys.argv[1]
 BUFF_SIZE = 4096
 
 # checks if in use
 try:
-    os.unlink(SERVER_ADDR)
+    os.unlink(SOCKET_PATH)
 except OSError:
-    if os.path.exists(SERVER_ADDR):
-        print(f'{SERVER_ADDR} already exists')
+    if os.path.exists(SOCKET_PATH):
+        print(f'{SOCKET_PATH} already exists')
         sys.exit(1)
 
 # used to store and close all sockets before exit
@@ -76,14 +79,14 @@ def init_wait(s: socket.socket, sm: SocketManager) -> None:
 
 # called on exit signal
 def close(_, __, sm: SocketManager) -> None:
-    print(f'Closing {SERVER_ADDR}')
+    print(f'Closing {SOCKET_PATH}')
     sm.close_all()
     sys.exit(0)
 
 # init socket manager
 sm = SocketManager()
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.bind(SERVER_ADDR)
+sock.bind(SOCKET_PATH)
 sock.listen(1)
 # store socket for future close
 sm(sock)
@@ -91,5 +94,5 @@ sm(sock)
 # this should work but should be tested
 # other way is to use a lambdas
 signal.signal(signal.SIGINT, partial(close, sm)) # type: ignore
-print(f'Listening on {SERVER_ADDR}\n')
+print(f'Listening on {SOCKET_PATH}\n')
 init_wait(sock, sm)
