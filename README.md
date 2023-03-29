@@ -2,7 +2,7 @@
 
 A socket for the Rust client in [OpenTau](https://github.com/GammaTauAI/opentau) for type-inference using [InCoder](https://huggingface.co/facebook/incoder-6B).
 
-The code was originally made by @arjunguha and later adapted by @mhyee, https://github.com/nuprl/TypeWeaver
+The code was originally written by @arjunguha and later adapted by @mhyee, https://github.com/nuprl/TypeWeaver
 
 ### To run independently:
   - clone this repo
