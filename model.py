@@ -6,10 +6,12 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM
+
+from typing import Union
 
 
-def init_model(model_name: str):
+def init_model(model_name: str, device: Union[str, int]):
     """
     Returns a dictionary with a model and tokenizer.
     """
@@ -25,7 +27,7 @@ def init_model(model_name: str):
         kwargs = dict()
     return {
         "model": AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-        .half(),
-        # .to(0),
+        .half()
+        .to(device),
         "tokenizer": AutoTokenizer.from_pretrained(model_name),
     }

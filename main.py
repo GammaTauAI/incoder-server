@@ -1,16 +1,25 @@
 import os
 import sys
 import json
+import torch
 import base64
 import socket
 import signal
 from threading import Thread
 from functools import partial
 
-from infill import infill
+import model
+from infer import infer
 
-assert len(sys.argv) == 2
+from typing import List
+
+num_args = len(sys.argv)
+assert num_args == 2 or num_args == 3, 'Usage: python3 main.py <socket_path> <gpu_idx (optional)>'
 SOCKET_PATH = sys.argv[1]
+if num_args == 3:
+    DEVICE = int(sys.argv[2])
+else:
+    DEVICE = 0 if torch.cuda.is_available() else 'cpu'
 BUFF_SIZE = 4096
 
 # checks if in use
@@ -52,21 +61,22 @@ def on_client(c: socket.socket) -> None:
             req = json.loads(data)
             code = str(base64.b64decode(req.code))
             num_samples = req.num_samples
-            should_infill_single = req.should_infill_single
-            type_annotations = infill(code, num_samples, should_infill_single)
-            if should_infill_single:
-                c.send(json.dumps({
-                    "type": "single",
-                    'type_annotations': [base64.b64decode(item) for item in type_annotations]
-                }).encode("utf-8")) # [Vec<String>]
-            else:
-                # decode each item in the 2d array
-                c.send(json.dumps({
-                    "type": "multiple",
-                    'type_annotations': [
-                        [[base64.b64decode(item) for item in row] for row in type_annotations]
-                    ]
-                }).encode("utf-8")) # Vec<Vec<String>>
+            temperature = req.temperature
+            max_length = req.max_length
+            type_annotations: List[str] = infer(
+                model=m,
+                code=code,
+                num_samples=num_samples,
+                temperature=temperature,
+                max_length=max_length,
+            )
+            print(f'Result: {type_annotations}')
+            resp = json.dumps({
+                "type": "single",
+                'type_annotations': [item for item in type_annotations]
+            }).encode("utf-8") # [Vec<String>]
+            print(f'Sending {resp}')
+            c.sendall(resp)
     finally:
         c.close()
 
@@ -82,6 +92,10 @@ def close(_, __, sm: SocketManager) -> None:
     print(f'Closing {SOCKET_PATH}')
     sm.close_all()
     sys.exit(0)
+
+# load model on device
+print(f'Loading model on device: `{DEVICE}`')
+m = model.init_model("facebook/incoder-6B", device=DEVICE)
 
 # init socket manager
 sm = SocketManager()

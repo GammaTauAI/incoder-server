@@ -1,24 +1,13 @@
-from pathlib import Path
-import argparse
-import typing as t
 import re
-import subprocess
-import sys
-import traceback
+from transformers import AutoTokenizer
 
-from typing import List, Union
+from typing import List, Tuple
 
 BOS = "<|endoftext|>"
 EOM = "<|endofmask|>"
 
-# NOTE: Does this have to be hard-coded?
-MODEL_MAX_OUTPUT_LENGTH = 2048
-
 _END_OF_MASK_OR_NEWLINE_RE = re.compile(r"<\|endofmask\|>|<\|endoftext\|>|\n", re.M)
-
-# Regular expression that finds a function declaration in JS
-# "function NAME(" or "function("
-_FUNC_START_REGEX = re.compile(r"function(\s+([a-zA-Z_$][a-zA-Z_$0-9]*))?\s*\(")
+INFILL_MARKER = "_hole_"
 
 
 def _extract_maybe_type(text: str) -> str:
@@ -28,25 +17,6 @@ def _extract_maybe_type(text: str) -> str:
     """
     return _END_OF_MASK_OR_NEWLINE_RE.split(text, maxsplit=1)[0].strip()
 
-
-def _templatize_function(line: str):
-    """
-    If the line contains function(x, y, z) then turn it into function(x ??, y ??, z ??)
-
-    TODO: Support return type annotation
-    """
-    # Find the first occurrence of "function("
-    function_start = _FUNC_START_REGEX.search(line)
-    if function_start is None:
-        return line
-    function_start = function_start.end()
-    # Find the first occurrence of ")"
-    function_end = line.find(")", function_start)
-    if function_end == -1 or function_end == function_start:
-        return line
-    arg_list = line[function_start:function_end].split(",")
-    arg_list = "???, ".join(arg_list)
-    return line[:function_start] + arg_list + "???" + line[function_end:]
 
 def _prefix_ending_with_newline(str, max_length):
     """
@@ -94,7 +64,7 @@ class TypeInference:
 
     def _generate(
         self, prompt: str
-    ) -> t.Tuple[str, bool]:
+    ) -> Tuple[str, bool]:
         """
         A canonical function to generate text from a prompt. The length_limit
         limits the maximum length of the generated text (beyond the prompt).
@@ -107,9 +77,6 @@ class TypeInference:
 
         if max_length == current_length:
             return prompt, True
-        if max_length > MODEL_MAX_OUTPUT_LENGTH:
-            max_length = MODEL_MAX_OUTPUT_LENGTH
-            truncated = True
         else:
             truncated = False
 
@@ -154,85 +121,51 @@ class TypeInference:
         self.type_log.append({ "prompt": prompt, "type": filled_type })
         return filled_type
 
-    def _infill_one(
-            self,
-            template: str,
-            infill_marker: str,
-            samples: int
-        ) -> List[str]:
-        parts = template.split(infill_marker, 1)
+    def _infill_one(self, template: str) -> str:
+        parts = template.split(INFILL_MARKER, 1)
         if len(parts) < 2:
             raise ValueError(
-                f"Expected at least one {infill_marker} in template. Got {template}"
+                f"Expected at least one {INFILL_MARKER} in template. Got {template}"
             )
         infilled_prefix = parts[0]
-        type_annotations: List[str] = []
-        cur_sample_idx = 0
-        while cur_sample_idx < samples:
-            suffix = parts[1]
-            type_annotation = self._get_type_annotation(infilled_prefix, suffix)
-            type_annotations += [type_annotation]
-            infilled_prefix += type_annotation
-            cur_sample_idx += 1
-        return type_annotations
-
-    def _infill_many(
-            self, template: str, infill_marker: str, samples: int
-        ) -> List[List[str]]:
-        parts = template.split(infill_marker)
-        if len(parts) < 2:
-            raise ValueError(
-                f"Expected at least one {infill_marker} in template. Got {template}"
-            )
-
-        infilled_prefix = parts[0]
-        type_annotations: List[List[str]] = []
-        cur_sample_idx = 0
-        while cur_sample_idx < samples:
-            type_annotations_sample: List[str] = []
-            for part_index, part in enumerate(parts[1:]):
-                suffix = "".join(parts[part_index + 1 :])
-                filled_type = self._get_type_annotation(infilled_prefix, suffix)
-                type_annotations_sample += [filled_type]
-                infilled_prefix += filled_type
-            type_annotations += [type_annotations_sample]
-            cur_sample_idx += 1
-        return type_annotations
+        suffix = parts[1]
+        type_annotation = self._get_type_annotation(infilled_prefix, suffix)
+        return type_annotation
 
     # returns union now, must be fixed later
-    def infer(
-            self,
-            code: str,
-            samples: int,
-            infer_single: bool
-        ) -> Union[List[str], List[List[str]]]:
+    def infer(self, code: str) -> str:
         self.type_log.clear()
-        if "_hole_" not in code:
-            return []
-        if infer_single:
-            return self._infill_one(code, infill_marker="_hole_", samples=samples)
-        return self._infill_many(code, infill_marker="_hole_", samples=samples)
-
-import model
-m = model.init_model("facebook/incoder-6B")
-typeinf = TypeInference(**model.init_model("facebook/incoder-6B"))
+        if INFILL_MARKER not in code:
+            return ""
+        return self._infill_one(code)
 
 def split_string(string: str, max_length: int) -> List[str]:
     return [string[i : i + max_length] for i in range(0, len(string), max_length)]
 
+tokenizer = AutoTokenizer.from_pretrained("facebook/incoder-6B")
+
 # use dumb split for characters * 4 = token approximation
-def infill(code: str, samples: int, infill_single: bool, max_length: int = 2048):
-    res = []
-    for split_code in split_string(code, max_length * 4):
-        res += [typeinf.infer(split_code, samples, infill_single)]
-    return res
+def infer(model, code: str, num_samples: int, temperature: float = 0.2, max_length: int = 2048) -> List[str]:
+    assert num_samples > 0 
+    type_inf = TypeInference(model=model, tokenizer=tokenizer, temperature=temperature)
+    type_annotations: List[str] = []
+    while num_samples > 0:
+        for split_code in split_string(code, max_length * 4):
+            if INFILL_MARKER in split_code:
+                type_annotation = ""
+                while type_annotation == "":
+                    type_annotation = type_inf.infer(split_code)
+                type_annotations += [type_annotation]
+                break
+        num_samples -= 1
+    return type_annotations
 
 # for testing
 def main() -> None:
     code = """function add(a: _hole_, b: _hole_): _hole_ {
     return a + b;
 }"""
-    print(infill(code, samples=3, infill_single=True))
+    print(infer(code, num_samples=3, temperature=0.5, max_length=2048))
 
 
 if __name__ == "__main__":
