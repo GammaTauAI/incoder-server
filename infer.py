@@ -145,7 +145,7 @@ def split_string(string: str, max_length: int) -> List[str]:
 tokenizer = AutoTokenizer.from_pretrained("facebook/incoder-6B")
 
 # use dumb split for characters * 4 = token approximation
-def infer(model, code: str, num_samples: int, temperature: float = 0.2, max_length: int = 2048) -> List[str]:
+def infer(model, code: str, num_samples: int, max_length: int = 2048, temperature: float = 1.0) -> List[str]:
     assert num_samples > 0 
     type_inf = TypeInference(model=model, tokenizer=tokenizer, temperature=temperature)
     type_annotations: List[str] = []
@@ -159,14 +159,3 @@ def infer(model, code: str, num_samples: int, temperature: float = 0.2, max_leng
                 break
         num_samples -= 1
     return type_annotations
-
-# for testing
-def main() -> None:
-    code = """function add(a: _hole_, b: _hole_): _hole_ {
-    return a + b;
-}"""
-    print(infer(code, num_samples=3, temperature=0.5, max_length=2048))
-
-
-if __name__ == "__main__":
-    main()

@@ -2,9 +2,9 @@ import os
 import sys
 import json
 import torch
-import base64
 import socket
 import signal
+import argparse
 from threading import Thread
 from functools import partial
 
@@ -13,21 +13,24 @@ from infer import infer
 
 from typing import List
 
-num_args = len(sys.argv)
-assert num_args == 2 or num_args == 3, 'Usage: python3 main.py <socket_path> <gpu_idx (optional)>'
-SOCKET_PATH = sys.argv[1]
-if num_args == 3:
-    DEVICE = int(sys.argv[2])
-else:
-    DEVICE = 0 if torch.cuda.is_available() else 'cpu'
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--socket_path", type=str, help="The path to the socket")
+    parser.add_argument("--device", type=str, default="0" if torch.cuda.is_available() else "cpu", help="The device for the model")
+    parser.add_argument("--max_length", type=int, default=2048, help="The max length for the context window")
+    args = parser.parse_args()
+    return args
+
+args = get_args()
+
 BUFF_SIZE = 4096
 
 # checks if in use
 try:
-    os.unlink(SOCKET_PATH)
+    os.unlink(args.socket_path)
 except OSError:
-    if os.path.exists(SOCKET_PATH):
-        print(f'{SOCKET_PATH} already exists')
+    if os.path.exists(args.socket_path):
+        print(f'{args.socket_path} already exists')
         sys.exit(1)
 
 # used to store and close all sockets before exit
@@ -53,22 +56,30 @@ def recvall(s: socket.socket) -> bytes:
             break
     return data
 
+END_TOKEN = "??END??"
 # handles a single client
 def on_client(c: socket.socket) -> None:
     try:
+        complete_data = ""
         while True:
             data = recvall(c)
+            if len(data) == 0:
+                break
+            if not data.endswith(END_TOKEN):
+                complete_data += data
+                continue
+            complete_data += data[:-len(END_TOKEN)]
+
             req = json.loads(data)
-            code = str(base64.b64decode(req.code))
-            num_samples = req.num_samples
-            temperature = req.temperature
-            max_length = req.max_length
+            print(f"Received {req}")
+            code = req["code"]
+            num_samples = req["num_samples"]
+            temperature = req["temperature"]
             type_annotations: List[str] = infer(
                 model=m,
                 code=code,
                 num_samples=num_samples,
                 temperature=temperature,
-                max_length=max_length,
             )
             print(f'Result: {type_annotations}')
             resp = json.dumps({
@@ -89,18 +100,18 @@ def init_wait(s: socket.socket, sm: SocketManager) -> None:
 
 # called on exit signal
 def close(_, __, sm: SocketManager) -> None:
-    print(f'Closing {SOCKET_PATH}')
+    print(f'Closing {args.socket_path}')
     sm.close_all()
     sys.exit(0)
 
 # load model on device
-print(f'Loading model on device: `{DEVICE}`')
-m = model.init_model("facebook/incoder-6B", device=DEVICE)
+print(f'Loading model on device: `{args.device}`')
+m = model.init_model("facebook/incoder-6B", device=args.device)
 
 # init socket manager
 sm = SocketManager()
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.bind(SOCKET_PATH)
+sock.bind(args.socket_path)
 sock.listen(1)
 # store socket for future close
 sm(sock)
@@ -108,5 +119,5 @@ sm(sock)
 # this should work but should be tested
 # other way is to use a lambdas
 signal.signal(signal.SIGINT, partial(close, sm)) # type: ignore
-print(f'Listening on {SOCKET_PATH}\n')
+print(f'Listening on {args.socket_path}\n')
 init_wait(sock, sm)
