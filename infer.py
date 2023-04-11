@@ -53,7 +53,7 @@ def _clip_text(str1, str2, max_length):
 
 
 class TypeInference:
-    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_context_length: int = 70):
+    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_context_length: int = 70, device = 0):
         self.model = model
         self.tokenizer = tokenizer
         self.temperature = temperature
@@ -61,6 +61,7 @@ class TypeInference:
         self.max_context_length = max_context_length
         self.do_sample = False if temperature == 0 else True
         self.type_log = []
+        self.device = device
 
     def _generate(
         self, prompt: str
@@ -70,7 +71,7 @@ class TypeInference:
         limits the maximum length of the generated text (beyond the prompt).
         """
         input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(
-            self.model.device
+            self.device
         )
         current_length = input_ids.flatten().size(0)
         max_length = self.type_length_limit + current_length
@@ -145,9 +146,14 @@ def split_string(string: str, max_length: int) -> List[str]:
 tokenizer = AutoTokenizer.from_pretrained("facebook/incoder-6B")
 
 # use dumb split for characters * 4 = token approximation
-def infer(model, code: str, num_samples: int, max_length: int = 2048, temperature: float = 1.0) -> List[str]:
+def infer(model_dict: dict, code: str, num_samples: int, max_length: int = 2048, temperature: float = 1.0, device = 0) -> List[str]:
     assert num_samples > 0 
-    type_inf = TypeInference(model=model, tokenizer=tokenizer, temperature=temperature)
+    type_inf = TypeInference(
+        model=model_dict["model"],
+        tokenizer=model_dict["tokenizer"],
+        temperature=temperature,
+        device=device
+    )
     type_annotations: List[str] = []
     while num_samples > 0:
         for split_code in split_string(code, max_length * 4):

@@ -62,7 +62,7 @@ def on_client(c: socket.socket) -> None:
     try:
         complete_data = ""
         while True:
-            data = recvall(c)
+            data = recvall(c).decode('utf-8')
             if len(data) == 0:
                 break
             if not data.endswith(END_TOKEN):
@@ -70,16 +70,17 @@ def on_client(c: socket.socket) -> None:
                 continue
             complete_data += data[:-len(END_TOKEN)]
 
-            req = json.loads(data)
+            req = json.loads(complete_data)
             print(f"Received {req}")
             code = req["code"]
             num_samples = req["num_samples"]
             temperature = req["temperature"]
             type_annotations: List[str] = infer(
-                model=m,
+                model_dict=model_dict,
                 code=code,
                 num_samples=num_samples,
                 temperature=temperature,
+                device=args.device,
             )
             print(f'Result: {type_annotations}')
             resp = json.dumps({
@@ -96,7 +97,8 @@ def init_wait(s: socket.socket, sm: SocketManager) -> None:
     while True:
         c, _ = s.accept()
         sm(c)
-        Thread(target=on_client, args=(c,))
+        thread = Thread(target=on_client, args=(c,))
+        thread.start()
 
 # called on exit signal
 def close(_, __, sm: SocketManager) -> None:
@@ -106,7 +108,7 @@ def close(_, __, sm: SocketManager) -> None:
 
 # load model on device
 print(f'Loading model on device: `{args.device}`')
-m = model.init_model("facebook/incoder-6B", device=args.device)
+model_dict = model.init_model("facebook/incoder-6B", device=args.device)
 
 # init socket manager
 sm = SocketManager()
