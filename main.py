@@ -73,14 +73,13 @@ def on_client(c: socket.socket) -> None:
             req = json.loads(complete_data)
             print(f"Received {req}")
             code = req["code"]
-            num_samples = req["num_samples"]
+            num_comps = req["num_samples"]
             temperature = req["temperature"]
             type_annotations: List[str] = infer(
                 model_dict=model_dict,
                 code=code,
-                num_samples=num_samples,
+                num_comps=num_comps,
                 temperature=temperature,
-                device=args.device,
             )
             print(f'Result: {type_annotations}')
             resp = json.dumps({
