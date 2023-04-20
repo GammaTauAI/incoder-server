@@ -1,7 +1,7 @@
 import re
 from transformers import AutoTokenizer
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 BOS = "<|endoftext|>"
 EOM = "<|endofmask|>"
@@ -30,37 +30,39 @@ def _suffix_starting_with_newline(str, max_length):
     """
     return str[-max_length:].split("\n", 1)[0]
 
-def _clip_text(str1, str2, max_length):
+def _clip_text(prefix, suffix, max_length):
     """
-    Clips the two strings so that the total length is at most max_length.
-    Keeps the first string intact, and clips the second string if possible
+    Clip the prefix and suffix to be at most `max_length` characters long.
+    The start of the prefix should be clipped, and the end of the suffix
+    should be clipped. If both already fit within `max_length`, then do
+    nothing.
     """
 
-    # Find the last occurrence of "function" in str1
-    enclosing_function_start = str1.rfind("function")
-    str1 = str1[enclosing_function_start:]
+    prefix_len = len(prefix)
+    suffix_len = len(suffix)
+    if prefix_len + suffix_len <= max_length:
+        return prefix, suffix  # Nothing to do
 
-    if len(str1) < max_length:
-        str2 = _prefix_ending_with_newline(str2, max_length - len(str1))
-    elif len(str2) < max_length:
-        # Negative, so we get the suffix
-        str1 = _suffix_starting_with_newline(str1, max_length - len(str2))
-    else:
-        # Both exceed the max_length
-        str1 = _suffix_starting_with_newline(str1, max_length // 2)
-        str2 = _prefix_ending_with_newline(str2, max_length // 2)
-    return str1, str2
+    max_suffix_length = int(max_length / 2)
+    max_prefix_length = max_length - max_suffix_length
+
+    if prefix_len > max_prefix_length:
+        prefix = prefix[-max_prefix_length:]
+
+    if suffix_len > max_suffix_length:
+        suffix = suffix[:max_suffix_length]
+
+    return prefix, suffix
 
 
 class TypeInference:
-    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_context_length: int = 70, device = 0):
+    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_length: int = 70, device = 0):
         self.model = model
         self.tokenizer = tokenizer
         self.temperature = temperature
         self.type_length_limit = type_length_limit
-        self.max_context_length = max_context_length
+        self.max_length = max_length
         self.do_sample = False if temperature == 0 else True
-        self.type_log = []
         self.device = device
 
     def _generate(
@@ -113,29 +115,38 @@ class TypeInference:
 
     def _get_type_annotation(self, prefix: str, suffix: str) -> str:
         clipped_prefix, clipped_suffix = _clip_text(
-            prefix, suffix, self.max_context_length
+            prefix, suffix, self.max_length
         )
         prompt = f"{clipped_prefix}: <|mask:0|>{clipped_suffix}<|mask:1|><|mask:0|>"
         filled_type = self._generate_valid_type(
             prompt, retries=3
         )
-        self.type_log.append({ "prompt": prompt, "type": filled_type })
         return filled_type
 
     def _infill_one(self, template: str) -> str:
         parts = template.split(INFILL_MARKER, 1)
+        print(parts)
         if len(parts) < 2:
             raise ValueError(
                 f"Expected at least one {INFILL_MARKER} in template. Got {template}"
             )
         infilled_prefix = parts[0]
-        suffix = parts[1]
-        type_annotation = self._get_type_annotation(infilled_prefix, suffix)
+        suffix = parts[1].replace(": " + INFILL_MARKER, "")
+
+        print(f"\tleft:\n {infilled_prefix}\n\tright:\n {suffix}")
+
+        clipped_prefix, clipped_suffix = _clip_text(
+            infilled_prefix, suffix, self.max_length
+        )
+
+        print(
+            f"\tclipped left:\n {clipped_prefix}\n\tclipped right:\n {clipped_suffix}")
+
+        type_annotation = self._get_type_annotation(clipped_prefix, clipped_suffix)
         return type_annotation
 
     # returns union now, must be fixed later
-    def infer(self, code: str) -> str:
-        self.type_log.clear()
+    def infer(self, code: str) -> Optional[str]:
         if INFILL_MARKER not in code:
             return ""
         return self._infill_one(code)
@@ -145,23 +156,19 @@ def split_string(string: str, max_length: int) -> List[str]:
 
 tokenizer = AutoTokenizer.from_pretrained("facebook/incoder-6B")
 
-# use dumb split for characters * 4 = token approximation
-def infer(model_dict: dict, code: str, num_samples: int, max_length: int = 2048, temperature: float = 1.0, device = 0) -> List[str]:
-    assert num_samples > 0 
+def infer(model_dict: dict, code: str, num_comps: int, max_length: int = 2048, temperature: float = 1.0) -> List[str]:
+    assert num_comps > 0 
     type_inf = TypeInference(
         model=model_dict["model"],
         tokenizer=model_dict["tokenizer"],
         temperature=temperature,
-        device=device
+        device=model_dict["device"],
+        max_length=max_length,
     )
     type_annotations: List[str] = []
-    while num_samples > 0:
-        for split_code in split_string(code, max_length * 4):
-            if INFILL_MARKER in split_code:
-                type_annotation = ""
-                while type_annotation == "":
-                    type_annotation = type_inf.infer(split_code)
-                type_annotations += [type_annotation]
-                break
-        num_samples -= 1
+    while num_comps > 0:
+        type_annotation = type_inf.infer(code)
+        if type_annotation:
+            type_annotations += [type_annotation]
+        num_comps -= 1
     return type_annotations

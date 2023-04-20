@@ -29,5 +29,6 @@ def init_model(model_name: str, device: Union[str, int]):
         "model": AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
         .half()
         .to(device),
+        "device": device,
         "tokenizer": AutoTokenizer.from_pretrained(model_name),
     }

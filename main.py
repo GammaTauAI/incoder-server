@@ -107,7 +107,13 @@ def close(_, __, sm: SocketManager) -> None:
     sys.exit(0)
 
 # load model on device
+
+# load model on device
 print(f'Loading model on device: `{args.device}`')
+if args.device == "cpu":
+    device = torch.device("cpu")
+else:
+    device = torch.device("cuda", int(args.device))
 model_dict = model.init_model("facebook/incoder-6B", device=args.device)
 
 # init socket manager
