@@ -1,4 +1,5 @@
 import re
+import torch
 from transformers import AutoTokenizer
 
 from typing import List, Tuple, Optional
@@ -56,7 +57,7 @@ def _clip_text(prefix, suffix, max_length):
 
 
 class TypeInference:
-    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_length: int = 70, device = 0):
+    def __init__(self, model, tokenizer, temperature: float = 0.0, type_length_limit: int = 5, max_length: int = 70, device = 0, num_comps: int = 1):
         self.model = model
         self.tokenizer = tokenizer
         self.temperature = temperature
@@ -64,66 +65,78 @@ class TypeInference:
         self.max_length = max_length
         self.do_sample = False if temperature == 0 else True
         self.device = device
+        self.num_comps = num_comps
 
-    def _generate(
-        self, prompt: str
-    ) -> Tuple[str, bool]:
+    def _generate(self, prefix_suffix_tuples) -> List[str]:
         """
         A canonical function to generate text from a prompt. The length_limit
         limits the maximum length of the generated text (beyond the prompt).
         """
-        input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(
-            self.device
-        )
-        current_length = input_ids.flatten().size(0)
-        max_length = self.type_length_limit + current_length
+        if type(prefix_suffix_tuples) == tuple:
+            prefix_suffix_tuples = [prefix_suffix_tuples]
 
-        if max_length == current_length:
-            return prompt, True
-        else:
-            truncated = False
+        print(f"prefix_suffix_tuples: {prefix_suffix_tuples}")
 
-        output = self.model.generate(
-            input_ids=input_ids,
-            do_sample=self.do_sample,
-            top_p=0.95, # NOTE: Any point in this?
-            temperature=self.temperature,
-            max_length=max_length,
-        )
-        detok_hypo_str = self.tokenizer.decode(output.flatten())
-        if detok_hypo_str.startswith(BOS):
-            detok_hypo_str = detok_hypo_str[len(BOS) :]
-        return detok_hypo_str, truncated
+        prompts= [f"{p}: <|mask:0|>{s}<|mask:1|><|mask:0|>" for p, s in prefix_suffix_tuples]
 
-    def _generate_valid_type(
-        self, prompt: str, retries: int
-    ):
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            return_token_type_ids=False
+        ).to(self.device)
+
+        max_length = inputs.input_ids[0].size(0) + self.max_length
+        print(max_length)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                do_sample=True,
+                top_p=0.95,
+                temperature=self.temperature,
+                max_length=max_length,
+                pad_token_id=self.tokenizer.pad_token_id
+            )
+
+        detok_hypo_strs = [self.tokenizer.decode(output.flatten()) for output in outputs]
+        detok_hypo_strs = [string[len(BOS) :] for string in detok_hypo_strs if string.startswith(BOS)]
+        return detok_hypo_strs
+
+    def _generate_valid_types(self, prefix: str, suffix: str, retries: int) -> List[str]:
         """
         Given an InCoder-style prompt for infilling, tries to fill <|mask:0|> with a valid
         TypeScript type.
         """
-        filled_type = "any"
         for _ in range(retries):
-            generated, is_truncated = self._generate(prompt)
-            if is_truncated:
-                print("WARNING: Truncated output")
-            filled_type = _extract_maybe_type(generated[len(prompt) :])
-            if filled_type == "":
-                filled_type = "any"
+            # generated = self._generate([prompt] * self.num_samples)
+            generated = self._generate([(prefix, suffix)] * self.num_comps)
+
+            checked_not_empty = []
+            for g in generated:
+                if g.strip() != "":
+                    checked_not_empty.append(g.strip())
+
+            if len(checked_not_empty) == 0:
                 continue
-        return filled_type
+            
+            # filled_type = _extract_maybe_type(generated[len(prompt) :])
+            # if filled_type == "":
+                # filled_type = "any"
+                # continue
+            return checked_not_empty
+        return ["any"]
 
-    def _get_type_annotation(self, prefix: str, suffix: str) -> str:
-        clipped_prefix, clipped_suffix = _clip_text(
-            prefix, suffix, self.max_length
-        )
-        prompt = f"{clipped_prefix}: <|mask:0|>{clipped_suffix}<|mask:1|><|mask:0|>"
-        filled_type = self._generate_valid_type(
-            prompt, retries=3
-        )
-        return filled_type
+    # def _get_type_annotation(self, prefix: str, suffix: str) -> List[str]:
+        # clipped_prefix, clipped_suffix = _clip_text(
+            # prefix, suffix, self.max_length
+        # )
+        # prompt = f"{clipped_prefix}: <|mask:0|>{clipped_suffix}<|mask:1|><|mask:0|>"
+        # filled_types = self._generate_valid_types(
+            # clipped_prefix, clipped_suffix, retries=3
+        # )
+        # return filled_types
 
-    def _infill_one(self, template: str) -> str:
+    def _infill_one(self, template: str) -> List[str]:
         parts = template.split(INFILL_MARKER, 1)
         print(parts)
         if len(parts) < 2:
@@ -142,13 +155,15 @@ class TypeInference:
         print(
             f"\tclipped left:\n {clipped_prefix}\n\tclipped right:\n {clipped_suffix}")
 
-        type_annotation = self._get_type_annotation(clipped_prefix, clipped_suffix)
-        return type_annotation
+        # type_annotations = self._get_type_annotation(clipped_prefix, clipped_suffix)
+        # return type_annotations
+        filled_types = self._generate_valid_types(clipped_prefix, clipped_suffix, retries=3)
+        return filled_types
 
     # returns union now, must be fixed later
-    def infer(self, code: str) -> Optional[str]:
+    def infer(self, code: str) -> List[str]:
         if INFILL_MARKER not in code:
-            return ""
+            return []
         return self._infill_one(code)
 
 def split_string(string: str, max_length: int) -> List[str]:
@@ -165,10 +180,4 @@ def infer(model_dict: dict, code: str, num_comps: int, max_length: int = 2048, t
         device=model_dict["device"],
         max_length=max_length,
     )
-    type_annotations: List[str] = []
-    while num_comps > 0:
-        type_annotation = type_inf.infer(code)
-        if type_annotation:
-            type_annotations += [type_annotation]
-        num_comps -= 1
-    return type_annotations
+    return type_inf.infer(code)
